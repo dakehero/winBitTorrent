@@ -49,19 +49,20 @@ jobs:
         with:
           path: ${{ runner.temp }}/vcpkg-binary-cache
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ matrix.platform }}-${{ hashFiles('build/runtime/vcpkg.json', 'build/build-runtime.ps1') }}
-      - name: Build native runtime and engine
+      - name: Build native runtime
         run: |
           $env:VCPKG_DEFAULT_BINARY_CACHE = Join-Path $env:RUNNER_TEMP 'vcpkg-binary-cache'
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           if (-not (Test-Path "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe")) { throw 'Runner vcpkg installation was not found.' }
           ./build/build-runtime.ps1 -Platform $env:BUILD_PLATFORM -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT
-          ./build/build-engine.ps1 -Platform $env:BUILD_PLATFORM -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT
       - name: Save native dependency cache
         if: steps.vcpkg-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4
         with:
           path: ${{ runner.temp }}/vcpkg-binary-cache
           key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
+      - name: Build native engine
+        run: ./build/build-engine.ps1 -Platform $env:BUILD_PLATFORM -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT
       - name: Run unit and engine integration tests
         run: |
           foreach ($suite in 'Core.Tests', 'Infrastructure.Tests', 'IntegrationTests') {
