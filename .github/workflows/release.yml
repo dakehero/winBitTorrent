@@ -93,7 +93,7 @@ jobs:
             }
             Assert-NativeArchitecture $binary.FullName $env:BUILD_PLATFORM -AllowAnyCpu
           }
-          $packages = @(Get-ChildItem dist -Recurse -File | Where-Object { $_.Extension -eq '.zip' -or ($_.Extension -eq '.exe' -and $_.Directory.Name -like '*-installer') })
+          $packages = @(Get-ChildItem -Path "dist/WinBitTorrent-*-$env:BUILD_PLATFORM-portable.zip", "dist/WinBitTorrent-*-$env:BUILD_PLATFORM-installer/*.exe" -File)
           if ($packages.Count -ne 2) { throw "Expected one ZIP and one installer, found $($packages.Count)." }
           New-Item -ItemType Directory -Force -Path release-packages | Out-Null
           $checksums = foreach ($package in $packages) {
