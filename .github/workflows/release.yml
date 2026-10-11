@@ -44,7 +44,8 @@ jobs:
           dotnet-version: |
             8.0.x
             10.0.x
-      - uses: actions/cache@v4
+      - uses: actions/cache/restore@v4
+        id: vcpkg-cache
         with:
           path: ${{ runner.temp }}/vcpkg-binary-cache
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ matrix.platform }}-${{ hashFiles('build/runtime/vcpkg.json', 'build/build-runtime.ps1') }}
@@ -55,6 +56,12 @@ jobs:
           if (-not (Test-Path "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe")) { throw 'Runner vcpkg installation was not found.' }
           ./build/build-runtime.ps1 -Platform $env:BUILD_PLATFORM -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT
           ./build/build-engine.ps1 -Platform $env:BUILD_PLATFORM -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT
+      - name: Save native dependency cache
+        if: steps.vcpkg-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/vcpkg-binary-cache
+          key: ${{ steps.vcpkg-cache.outputs.cache-primary-key }}
       - name: Run unit and engine integration tests
         run: |
           foreach ($suite in 'Core.Tests', 'Infrastructure.Tests', 'IntegrationTests') {
@@ -76,19 +83,17 @@ jobs:
           }
           $packages = @(Get-ChildItem dist -Recurse -File | Where-Object { $_.Extension -eq '.zip' -or ($_.Extension -eq '.exe' -and $_.Directory.Name -like '*-installer') })
           if ($packages.Count -ne 2) { throw "Expected one ZIP and one installer, found $($packages.Count)." }
+          New-Item -ItemType Directory -Force -Path release-packages | Out-Null
           $checksums = foreach ($package in $packages) {
-            $relativePath = [IO.Path]::GetRelativePath((Resolve-Path dist).Path, $package.FullName).Replace('\', '/')
-            "{0}  {1}" -f (Get-FileHash $package.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $relativePath
+            Copy-Item -LiteralPath $package.FullName -Destination release-packages
+            "{0}  {1}" -f (Get-FileHash $package.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $package.Name
           }
-          $checksums | Set-Content "dist/SHA256SUMS-$env:BUILD_PLATFORM.txt" -Encoding utf8
+          $checksums | Set-Content "release-packages/SHA256SUMS-$env:BUILD_PLATFORM.txt" -Encoding utf8
       - name: Upload release packages
         uses: actions/upload-artifact@v4
         with:
           name: WinBitTorrent-${{ matrix.platform }}
-          path: |
-            dist/*.zip
-            dist/*-installer/*.exe
-            dist/SHA256SUMS-*.txt
+          path: release-packages/*
           if-no-files-found: error
           compression-level: 0
       - name: Upload test results
