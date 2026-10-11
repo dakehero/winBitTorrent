@@ -34,7 +34,6 @@ jobs:
       run:
         shell: pwsh
     env:
-      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-binary-cache
       WINBITTORRENT_BACKEND_ROOT: ${{ github.workspace }}/${{ matrix.backend-directory }}
       BUILD_PLATFORM: ${{ matrix.platform }}
       MSBUILD_PLATFORM: ${{ matrix.msbuild-platform }}
@@ -47,10 +46,11 @@ jobs:
             10.0.x
       - uses: actions/cache@v4
         with:
-          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          path: ${{ runner.temp }}/vcpkg-binary-cache
           key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ matrix.platform }}-${{ hashFiles('build/runtime/vcpkg.json', 'build/build-runtime.ps1') }}
       - name: Build native runtime and engine
         run: |
+          $env:VCPKG_DEFAULT_BINARY_CACHE = Join-Path $env:RUNNER_TEMP 'vcpkg-binary-cache'
           New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
           if (-not (Test-Path "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe")) { throw 'Runner vcpkg installation was not found.' }
           ./build/build-runtime.ps1 -Platform $env:BUILD_PLATFORM -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT
