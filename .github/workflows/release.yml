@@ -80,6 +80,17 @@ jobs:
           if ($payloads.Count -ne 1) { throw "Expected one portable folder, found $($payloads.Count)." }
           $payload = $payloads[0]
           foreach ($binary in Get-ChildItem $payload.FullName -Recurse -File | Where-Object Extension -In '.exe', '.dll', '.pyd') {
+            # The SDK deliberately ships this ARM64X helper in its x64 runtime package.
+            # Accept only an exact copy from that package, never arbitrary ARM64 DLLs.
+            if ($env:BUILD_PLATFORM -eq 'x64' -and $binary.Directory.FullName -eq $payload.FullName -and $binary.Name -eq 'Microsoft.Windows.Workloads.Resources_ec.dll') {
+              $nugetLocation = dotnet nuget locals global-packages --list --force-english-output
+              if ($LASTEXITCODE -ne 0) { throw 'Unable to locate the NuGet package cache.' }
+              $nugetRoot = $nugetLocation.Substring('global-packages: '.Length).Trim()
+              $sdkHybridSources = Get-ChildItem -Path "$nugetRoot/microsoft.windowsappsdk.ai/*/runtimes-framework/win-x64/native/Microsoft.Windows.Workloads.Resources_ec.dll" -File
+              $sdkHybridHashes = @($sdkHybridSources | Get-FileHash -Algorithm SHA256 | ForEach-Object Hash)
+              if ((Get-FileHash $binary.FullName -Algorithm SHA256).Hash -notin $sdkHybridHashes) { throw 'The SDK ARM64X helper does not match its official x64 NuGet payload.' }
+              continue
+            }
             Assert-NativeArchitecture $binary.FullName $env:BUILD_PLATFORM -AllowAnyCpu
           }
           $packages = @(Get-ChildItem dist -Recurse -File | Where-Object { $_.Extension -eq '.zip' -or ($_.Extension -eq '.exe' -and $_.Directory.Name -like '*-installer') })

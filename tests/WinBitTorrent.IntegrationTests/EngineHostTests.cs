@@ -10,12 +10,17 @@ using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using WinBitTorrent.Core.Models;
 using WinBitTorrent.Infrastructure.Engine;
+using Xunit.Abstractions;
 
 namespace WinBitTorrent.IntegrationTests;
 
 [Collection("Backend")]
 public sealed class EngineHostTests
 {
+    private readonly ITestOutputHelper _output;
+
+    public EngineHostTests(ITestOutputHelper output) => _output = output;
+
     [Fact]
     public async Task RefreshesOneThousandTorrentsWithinOneSecondWithoutBackpressureFailure()
     {
@@ -40,11 +45,14 @@ public sealed class EngineHostTests
 
             await host.Client!.Torrents.AddAsync(new TorrentAddRequest([], paths, SavePath: downloads, StartTorrent: false));
             Assert.Equal(1000, (await host.Client.Torrents.GetInfoAsync()).Count);
+            // Warm up the sync projection and JIT before measuring steady-state refresh latency.
+            Assert.Equal(1000, (await host.Client.Sync.GetMainDataAsync(0)).Torrents?.Count);
             for (var attempt = 0; attempt < 3; attempt++)
             {
                 var stopwatch = Stopwatch.StartNew();
                 var snapshot = await host.Client.Sync.GetMainDataAsync(0);
                 stopwatch.Stop();
+                _output.WriteLine($"1,000-torrent snapshot {attempt + 1}: {stopwatch.Elapsed}.");
                 Assert.Equal(1000, snapshot.Torrents?.Count);
                 Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1), $"1,000-torrent snapshot took {stopwatch.Elapsed}.");
             }
