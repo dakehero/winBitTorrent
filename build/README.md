@@ -1,5 +1,17 @@
 # Build tooling
 
+## Release CI
+
+`.github/workflows/release.yml` builds and tests x64 on `windows-2025` and ARM64
+on `windows-11-arm`, then uploads portable ZIPs, Inno Setup installers and
+SHA-256 checksums as Actions artifacts. It uses the same runtime, engine and
+release scripts as local builds. Test results are uploaded separately.
+
+Pushes to `master` or `feature/release-ci`, version tags, and manual runs build
+both architectures. A matching `v<Version>` tag in the upstream repository also
+creates a draft GitHub release after both builds pass; branch runs and fork runs
+only upload Actions artifacts. Review and publish the draft manually.
+
 ## Release builder — portable + installer in one action
 
 `release.ps1` publishes a self-contained `win-x64` or `win-arm64` build and packages it into:

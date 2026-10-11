@@ -1,0 +1,129 @@
+name: Windows release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master, feature/release-ci]
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build and test ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64
+            msbuild-platform: x64
+            runner: windows-2025
+            backend-directory: Backend
+          - platform: arm64
+            msbuild-platform: ARM64
+            runner: windows-11-arm
+            backend-directory: Backend/arm64
+    defaults:
+      run:
+        shell: pwsh
+    env:
+      VCPKG_DEFAULT_BINARY_CACHE: ${{ runner.temp }}/vcpkg-binary-cache
+      WINBITTORRENT_BACKEND_ROOT: ${{ github.workspace }}/${{ matrix.backend-directory }}
+      BUILD_PLATFORM: ${{ matrix.platform }}
+      MSBUILD_PLATFORM: ${{ matrix.msbuild-platform }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: |
+            8.0.x
+            10.0.x
+      - uses: actions/cache@v4
+        with:
+          path: ${{ env.VCPKG_DEFAULT_BINARY_CACHE }}
+          key: vcpkg-${{ runner.os }}-${{ runner.arch }}-${{ matrix.platform }}-${{ hashFiles('build/runtime/vcpkg.json', 'build/build-runtime.ps1') }}
+      - name: Build native runtime and engine
+        run: |
+          New-Item -ItemType Directory -Force -Path $env:VCPKG_DEFAULT_BINARY_CACHE | Out-Null
+          if (-not (Test-Path "$env:VCPKG_INSTALLATION_ROOT/vcpkg.exe")) { throw 'Runner vcpkg installation was not found.' }
+          ./build/build-runtime.ps1 -Platform $env:BUILD_PLATFORM -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT
+          ./build/build-engine.ps1 -Platform $env:BUILD_PLATFORM -VcpkgRoot $env:VCPKG_INSTALLATION_ROOT
+      - name: Run unit and engine integration tests
+        run: |
+          foreach ($suite in 'Core.Tests', 'Infrastructure.Tests', 'IntegrationTests') {
+            $arguments = @("tests/WinBitTorrent.$suite/WinBitTorrent.$suite.csproj", '-c', 'Release', "-p:Platform=$env:MSBUILD_PLATFORM", '--logger', "trx;LogFileName=$suite.trx", '--results-directory', 'TestResults')
+            if ($suite -eq 'IntegrationTests') { $arguments += @('--filter', 'FullyQualifiedName~EngineHostTests') }
+            dotnet test @arguments
+            if ($LASTEXITCODE -ne 0) { throw "$suite failed with exit code $LASTEXITCODE." }
+          }
+      - name: Build portable ZIP and installer
+        run: ./build/release.ps1 -Platform $env:BUILD_PLATFORM -Zip -OpenOutput:$false
+      - name: Verify payload architecture and write checksums
+        run: |
+          . ./build/architecture.ps1
+          $payloads = @(Get-ChildItem dist -Directory -Filter '*-portable')
+          if ($payloads.Count -ne 1) { throw "Expected one portable folder, found $($payloads.Count)." }
+          $payload = $payloads[0]
+          foreach ($binary in Get-ChildItem $payload.FullName -Recurse -File | Where-Object Extension -In '.exe', '.dll', '.pyd') {
+            Assert-NativeArchitecture $binary.FullName $env:BUILD_PLATFORM -AllowAnyCpu
+          }
+          $packages = @(Get-ChildItem dist -Recurse -File | Where-Object { $_.Extension -eq '.zip' -or ($_.Extension -eq '.exe' -and $_.Directory.Name -like '*-installer') })
+          if ($packages.Count -ne 2) { throw "Expected one ZIP and one installer, found $($packages.Count)." }
+          $checksums = foreach ($package in $packages) {
+            $relativePath = [IO.Path]::GetRelativePath((Resolve-Path dist).Path, $package.FullName).Replace('\', '/')
+            "{0}  {1}" -f (Get-FileHash $package.FullName -Algorithm SHA256).Hash.ToLowerInvariant(), $relativePath
+          }
+          $checksums | Set-Content "dist/SHA256SUMS-$env:BUILD_PLATFORM.txt" -Encoding utf8
+      - name: Upload release packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: WinBitTorrent-${{ matrix.platform }}
+          path: |
+            dist/*.zip
+            dist/*-installer/*.exe
+            dist/SHA256SUMS-*.txt
+          if-no-files-found: error
+          compression-level: 0
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.platform }}
+          path: TestResults/*.trx
+          if-no-files-found: ignore
+
+  release:
+    name: Create draft release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') && github.repository == 'Gorbachevvv/winBitTorrent'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: WinBitTorrent-*
+          merge-multiple: true
+          path: release-packages
+      - name: Check tag version and create draft
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          [xml]$props = Get-Content Directory.Build.props -Raw
+          $version = @($props.Project.PropertyGroup.Version | Where-Object { $_ })
+          if ($version.Count -ne 1 -or $env:RELEASE_TAG -cne "v$($version[0])") { throw 'Release tag must match the version in Directory.Build.props.' }
+          $packages = @(Get-ChildItem release-packages -Recurse -File | ForEach-Object FullName)
+          if ($packages.Count -ne 6) { throw "Expected two ZIPs, two installers and two checksum files, found $($packages.Count)." }
+          gh release create $env:RELEASE_TAG --draft --verify-tag --title "WinBitTorrent $($version[0])" --generate-notes @packages
+          if ($LASTEXITCODE -ne 0) { throw 'Creating the draft release failed.' }
